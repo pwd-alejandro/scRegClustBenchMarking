@@ -1,0 +1,403 @@
+# Benchmark
+
+# imports
+```{r message=FALSE}
+library(Seurat)
+library(scregclust)
+library(glue)
+library(utils)
+library(motifcluster)
+
+```
+#
+
+# functions
+```{r  message=FALSE}
+
+sample_data <- function(data, fraction, replace){
+  # genes x cells
+  dataset <- data
+  N <- round(ncol(dataset)*fraction)
+  
+  column_indices <- sample(ncol(dataset), size = N, replace = replace)
+  
+  sample <-  dataset[,column_indices]
+  
+  sample
+}
+
+
+process_data <- function(pbmcData){
+  
+  pbmc <- CreateSeuratObject(
+  counts = pbmcData, min.cells = 3, min.features = 200
+  )
+
+  pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT.")
+  pbmc <- subset(pbmc, subset = percent.mt < 30 & nFeature_RNA < 6000)
+  pbmc <- SCTransform(pbmc, variable.features.n = 6000)
+
+  z <- GetAssayData(pbmc, layer = 'scale.data')
+  
+  z
+  
+}
+
+initialize <- function(assay, mode){
+
+  out <- scregclust_format(assay, mode)
+  out
+}
+
+# Helpers
+
+find_gene_cluster_and_regulators <- function(gene_symbol, fit){
+
+  results <- fit$results[[1]]
+  print('--- Taking results for first penalty ---')
+  
+  is_regulator <- results$is_regulator
+  
+  gene_symbols <- results$genesymbols
+  
+  non_regulators_gene_symbols <- gene_symbols[is_regulator==0]
+  
+  index_absolute <- which(gene_symbols == gene_symbol)
+  
+  outputs <- results$output
+  
+  modes <- length(outputs)
+  
+  print(glue('--- Algo found {modes} modes and started cycling ---'))
+  
+  answers <- list()
+  
+  for (i in seq_len(modes)){
+  
+    sub_output <- outputs[[i]]
+    
+    i_cluster <- sub_output$cluster[[index_absolute]]
+    
+    i_cluster_all <- sub_output$cluster_all[[index_absolute]]
+    
+    answers[[as.character(i)]] = list(
+    
+    cluster = i_cluster,
+    
+    cluster_all = i_cluster_all)
+    
+    regulators <- list()
+    
+    if (!is.na(i_cluster_all)){
+    
+      clus <- max(i_cluster_all, i_cluster)
+      
+      
+      index_non_regulator <- which(non_regulators_gene_symbols == gene_symbol)
+      
+      
+      clus_regulators_gene_symbol <- gene_symbols[is_regulator == 1][sub_output$models[, clus]]
+      
+      number_regulators <- length(clus_regulators_gene_symbol)
+      
+      
+      for (j in seq_len(number_regulators)){
+      
+        gene_coeff <- sub_output$coeffs[[clus]][j, index_non_regulator]
+        
+        if (gene_coeff != 0L){
+          
+          regulators <- append(regulators, clus_regulators_gene_symbol[[j]])
+        }
+      }
+      
+      answers[[as.character(i)]][["regulators"]] = regulators
+    
+    }
+    
+    else {
+    
+      answers[[as.character(i)]][["regulators"]] = NA
+    }
+  }
+  
+  answers
+  
+  }
+
+
+```
+
+#
+
+# data
+```{r  message=FALSE}
+pbmcData <- Read10X_h5(
+  'pbmc_granulocyte_sorted_3k_filtered_feature_bc_matrix.h5',
+  use.names = TRUE,
+  unique.features = TRUE
+)[["Gene Expression"]]
+
+```
+#
+
+# Get benchmark clusters
+```{r}
+versions <- c(3)#, 2, 3, 4, 5)
+
+N_rounds <- 8
+
+sampling_frac <- 0.5
+
+with_replacement <- FALSE
+
+n_clusters <- c(6)#, 4, 6, 8, 10)
+
+
+for (i in seq_len(N_rounds)){
+  print(glue("\n--- round {i} starting ---\n"))
+  df <- data.frame()
+  sample <- sample_data(pbmcData, 
+                          fraction = sampling_frac, 
+                          replace = with_replacement)
+    
+  assay <- process_data(sample)
+  print(glue("\n--- {dim(assay)[2]} cells used ---\n"))
+  print(dim(assay))
+  out <- initialize(assay, 'TF') 
+  
+  
+  for (p in seq_len(length(n_clusters))){
+    
+    #clusters <- scregclust::kmeanspp(assay, 
+    #                                 n_cluster = n_clusters[p],
+    #                                 n_init_clusterings = 10,
+    #                                 n_max_iter = 10L)
+    
+    clusters <- motifcluster::kmeanspp(assay, 
+                                       k = n_clusters[p],
+                                       iter.max = 10L,
+                                       nstart = 10)$cluster
+    print(out$genesymbols[1:5])
+    print(clusters[1:5])
+    
+    times <- dim(assay)[1]
+    
+    
+    df_temp <- data.frame(
+                            iteration = c(rep(i, times = times)),
+                            n_clusters = c(rep(n_clusters[p], times = times)),
+                            gene = c(out$genesymbols),
+                            is_regulator = c(out$is_regulator),
+                            cluster = c(clusters)
+                            )
+      
+      df <- rbind(df, df_temp)
+      rm(clusters)
+      rm(df_temp)
+      print(glue("\n--- n_clus {n_clusters[p]} done ---\n"))
+
+    
+  }
+  
+  print(glue("\n--- round {i} done ---\n"))
+  write.csv(df, glue("benchmark_kmeanspp/test_iterations_v2/iteration{i}.csv"), row.names=FALSE)
+  rm(df)
+  rm(assay)
+  rm(out)
+  rm(sample)
+  
+ 
+  }
+```
+#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Get benchmark fits
+```{r}
+versions <- c(1, 2, 3, 4, 5)
+
+N_rounds <- 20
+
+sampling_frac <- 0.5
+
+with_replacement <- FALSE
+
+penalties <- c(0.1, 0.2, 0.3, 0.4, 0.5)
+
+set.seed(8374)
+
+for (p in seq_len(length(penalties))){
+  for (i in seq_len(N_rounds)){
+    print(glue("\n--- round {i} starting ---\n"))
+    
+    sample <- sample_data(pbmcData, fraction = sampling_frac, replace = with_replacement)
+    
+    assay <- process_data(sample)
+    print(glue("\n--- {dim(assay)[2]} cells used ---\n"))
+    
+    out <- initialize(assay, 'TF') 
+    
+  
+    fit <- scregclust(assay, 
+                      out$genesymbols, 
+                      out$is_regulator, 
+                      penalization = penalties[p],
+                      n_cl = 10L, 
+                      n_cycles = 50L, 
+                      noise_threshold = 0.05, 
+                      center=FALSE,
+                      sample_assignment = out$sample_assignment
+     )
+    
+    version <- versions[p]
+    saveRDS(fit, file = glue("benchmark_models/v{version}_sample_{i}_{penalties[p]}_fit.rds"))
+    
+    rm(fit)
+  }
+ 
+  }
+```
+#
+
+# Format results
+```{r}
+folder_path <- "benchmark_models"
+
+files <- list.files(folder_path)
+
+df <- data.frame()
+
+penalties <-c(0.1, 0.2, 0.3, 0.4, 0.5)
+
+for (file in files){
+  
+  i_fit <- readRDS(glue('{folder_path}/{file}'))
+  
+  
+  gene_symbols <- i_fit$results[[1]]$genesymbols
+  
+  
+  modes <- length(i_fit$results[[1]]$output)
+  
+  
+  for (i in seq_len(modes)){
+  
+    for (gene in gene_symbols){
+    
+      results <- find_gene_cluster_and_regulators(gene, i_fit)[[i]]
+      
+      regulators <- as.character(results[["regulators"]])
+      
+      if (is.na(results[["cluster"]])){
+        
+        bool_is_regulator <- TRUE
+        
+      }
+        
+      else {
+        
+       bool_is_regulator <- FALSE
+       
+      }
+    
+      times <- length(regulators)
+      
+      if (times==0){
+      
+        times <- 1
+        
+        regulators <- c(NA)
+        
+      }
+      
+      df_temp <- data.frame(
+                            iteration = c(rep(strsplit(file, "_")[[1]][3], times = times)),
+                            penalty = c(rep(penalties[as.integer(substring(file, 2, 2))], times = times)),
+                            state = c(rep(i, times = times)),
+                            gene = c(rep(gene, times = times)),
+                            is_regulator = c(rep(bool_is_regulator, times = times)),
+                            cluster = c(rep(results[["cluster"]], times = times)),
+                            cluster_all = c(rep(results[["cluster_all"]], times = times)),
+                            regulators = c(regulators)
+                            )
+      
+      df <- rbind(df, df_temp)
+  }
+  
+    }
+  
+  export_name <- strsplit(file,"rds")[[1]]
+  write.csv(df, glue("benchmark_models_csv/{export_name}csv"), row.names=FALSE)
+  
+  rm(df)
+  
+}
+```
+
+
+
+
+
+
+
+```{r}
+
+
+folder_path <- 'benchmark_models'
+file <- 'v1_sample_11_penalty0.1_fit.rds'
+
+fit_test = readRDS(glue('{folder_path}/{file}'))
+
+
+fit_test$results[[1]]$output[[1]]$cluster_all[[which(fit_test$results[[1]]$genesymbols=='LUC7L')]]
+
+
+
+is_regulator <- fit_test$results[[1]]$is_regulator
+
+genesymbols <- fit_test$results[[1]]$genesymbols
+
+
+
+
+
+```
+
+```{r}
+genesymbols[is_regulator == 1][fit_test$results[[1]]$output[[1]]$models[, 7]]
+```
+
+```{r}
+
+```
+
+
