@@ -5,8 +5,8 @@
 library(Seurat)
 library(scregclust)
 library(glue)
-library(utils)
-library(motifcluster)
+#library(utils)
+#library(motifcluster)
 
 ```
 #
@@ -141,67 +141,85 @@ pbmcData <- Read10X_h5(
 ```
 #
 
+
 # Get benchmark clusters
 ```{r}
-versions <- c(3)#, 2, 3, 4, 5)
+versions <- c(6)
 
-N_rounds <- 8
+N_rounds <- 100
 
 sampling_frac <- 0.5
 
 with_replacement <- FALSE
 
-n_clusters <- c(6)#, 4, 6, 8, 10)
+n_clusters <- c(50)
 
 
 for (i in seq_len(N_rounds)){
-  print(glue("\n--- round {i} starting ---\n"))
   df <- data.frame()
-  sample <- sample_data(pbmcData, 
-                          fraction = sampling_frac, 
-                          replace = with_replacement)
-    
-  assay <- process_data(sample)
-  print(glue("\n--- {dim(assay)[2]} cells used ---\n"))
-  print(dim(assay))
-  out <- initialize(assay, 'TF') 
-  
   
   for (p in seq_len(length(n_clusters))){
     
-    #clusters <- scregclust::kmeanspp(assay, 
-    #                                 n_cluster = n_clusters[p],
-    #                                 n_init_clusterings = 10,
-    #                                 n_max_iter = 10L)
+    print(glue("\n--- round {i} starting ---\n"))
     
-    clusters <- motifcluster::kmeanspp(assay, 
-                                       k = n_clusters[p],
-                                       iter.max = 10L,
-                                       nstart = 10)$cluster
-    print(out$genesymbols[1:5])
-    print(clusters[1:5])
+    sample <- sample_data(pbmcData, 
+                            fraction = sampling_frac, 
+                            replace = with_replacement)
+      
+    assay <- process_data(sample)
+    print(glue("\n--- {dim(assay)[2]} cells used ---\n"))
+    print(dim(assay))
+    out <- initialize(assay, 'TF') 
     
-    times <- dim(assay)[1]
+    targets <- assay[out$genesymbols[c(which(out$is_regulator==0))],]
+    
+    targets <- targets
+    
+    clusters <- scregclust::kmeanspp(targets, 
+                                     n_cluster = n_clusters[p],
+                                     n_init_clusterings = 10,
+                                     n_max_iter = 10L)
+    
+    clusters_km <- kmeans(targets,
+                          centers=n_clusters[p],
+                          iter.max = 10L, 
+                          nstart = 10)$cluster
+    
+    #kmpp <- motifcluster::kmeanspp
+    #clusters <- kmpp(assay, 
+    #                                   k = n_clusters[p],
+    #                                   iter.max = 10L,
+    #                                   nstart = 10)$cluster
+    #print(out$genesymbols[1:5])
+    #print(clusters[1:5])
+    
+    times <- dim(targets)[1]
+    
+    index_targets <- match(out$genesymbols, row.names(targets))
+
+    index_targets <- index_targets[!is.na(index_targets)]
     
     
     df_temp <- data.frame(
                             iteration = c(rep(i, times = times)),
                             n_clusters = c(rep(n_clusters[p], times = times)),
-                            gene = c(out$genesymbols),
-                            is_regulator = c(out$is_regulator),
-                            cluster = c(clusters)
+                            gene = c(row.names(targets)),
+                            is_regulator = c(out$is_regulator[index_targets]),
+                            cluster = c(clusters),
+                            cluster_km = c(clusters_km)
                             )
       
       df <- rbind(df, df_temp)
       rm(clusters)
       rm(df_temp)
+      #rm(kmpp)
       print(glue("\n--- n_clus {n_clusters[p]} done ---\n"))
 
     
   }
   
   print(glue("\n--- round {i} done ---\n"))
-  write.csv(df, glue("benchmark_kmeanspp/test_iterations_v2/iteration{i}.csv"), row.names=FALSE)
+  write.csv(df, glue("benchmark_kmeanspp/test_iterations_v3/iteration{i}_hh.csv"), row.names=FALSE)
   rm(df)
   rm(assay)
   rm(out)
@@ -212,7 +230,23 @@ for (i in seq_len(N_rounds)){
 ```
 #
 
+```{r}
+length(head(match(out$genesymbols, row.names(targets))))
+```
 
+
+
+
+```{r}
+
+```
+
+
+```{r}
+
+
+
+```
 
 
 
